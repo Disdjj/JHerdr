@@ -1,0 +1,10 @@
+{
+  "programs": {
+    "antigravity": { "run": ["agy", "--dangerously-skip-permissions"] },
+    "claude": { "run": ["claude", "--dangerously-skip-permissions"] },
+    "codex": { "run": ["codex", "--no-daemon", "--dangerously-bypass-approvals-and-sandbox"] },
+    "kimi": { "run": ["kimi", "--yolo"] },
+    "opencode": { "run": ["opencode", "--auto"] },
+    "pi": { "run": ["pi"] }
+  }
+}

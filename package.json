@@ -1,0 +1,15 @@
+{
+  "name": "jherdr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Project → Worktree → Worker navigation for Herdr",
+  "scripts": {
+    "agent": "node scripts/run-agent.mjs",
+    "test": "node --test test/*.test.js",
+    "check": "node scripts/check.mjs",
+    "install:herdr": "node scripts/install.mjs",
+    "uninstall:herdr": "node scripts/install.mjs --uninstall"
+  },
+  "engines": { "node": ">=22" }
+}
