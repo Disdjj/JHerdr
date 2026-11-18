@@ -21,6 +21,16 @@ export function buildLayout(source) {
   sidebar.max = 480;
   lists.children = [{ id: "spaces", type: "block", size: { weight: 1 }, min: 100, content: { mod: MOD } }];
   lists.resizable = false;
+  const tabs = find(layout, "tabs");
+  if (tabs?.type === "block") {
+    const { content, window_drag } = tabs;
+    delete tabs.content;
+    delete tabs.window_drag;
+    Object.assign(tabs, { type: "row", resizable: false, children: [
+      { id: "jherdr-tab-strip", type: "block", content, window_drag, size: { weight: 1 } },
+      { id: "jherdr-zed", type: "block", size: { px: 69 }, content: { mod: MOD, props: { zedToolbar: true } } },
+    ] });
+  }
   layout.preview = "layouts/jherdr-preview.svg";
   layout.colors = { ...(layout.colors || {}), canvas: "#0D0D17", background: "#0D0D17", chrome: "#141420",
     foreground: "#DDDDE7", muted: "#A3A3B8", dim: "#818199", border: "#292938", raised: "#20202E",

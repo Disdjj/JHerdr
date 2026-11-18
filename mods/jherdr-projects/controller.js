@@ -1,6 +1,20 @@
 import { agentCatalog, parseProgramFile } from "./agent-config.js";
 
-import { stateOf, registerProject, readRepository, normalize, snapshotWorkers } from "./model.js";
+import { stateOf, registerProject, readRepository, normalize, snapshotWorkers, zedTarget } from "./model.js";
+
+export async function openInZed(execute, folder, machine) {
+  const result = await execute("zed", ["--", zedTarget(folder, machine)], { timeout: 15000 });
+  if (result.code !== 0) throw new Error(result.stderr.trim() || "Zed 启动失败，请检查本机的 zed 命令");
+}
+
+export async function openActiveFolderInZed(execute, { folder, machine }) {
+  let root;
+  try {
+    const git = await execute("git", ["-C", folder, "rev-parse", "--show-toplevel"], { on: machine, timeout: 5000 });
+    if (git.code === 0) root = git.stdout.replace(/\r?\n$/, "");
+  } catch { /* Plain directories also open when Git is unavailable. */ }
+  return openInZed(execute, root || folder, machine);
+}
 
 // All asynchronous discovery is bounded. A slow/offline repository keeps its previous tree.
 export class RepositoryController {

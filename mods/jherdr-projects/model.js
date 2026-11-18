@@ -1,5 +1,22 @@
 // Pure data model: no host calls, subprocesses, or UI state mutation.
 export const STATE_KEY = "jherdr.projects.v1";
+export function activeZedFolder(spaces, panes, machines) {
+  const space = spaces.find(s => s.active);
+  if (!space || (space.machine && !machines.some(m => m.name === space.machine && m.layout === "ready"))) return null;
+  const tab = space.tabs.find(t => t.active);
+  const candidates = tab ? panes.filter(p => p.tab === tab.id && p.cwd) : [];
+  const folder = candidates.find(p => p.focused)?.cwd || candidates[0]?.cwd || space.folder;
+  return folder ? { folder, machine: space.machine ?? null } : null;
+}
+export function zedTarget(folder, machine) {
+  if (!folder || !/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(folder)) throw new Error("需要项目的绝对路径");
+  if (!machine) return folder;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(machine)) throw new Error("远程机器需要有效的 SSH Host 别名");
+  let path = folder;
+  if (/^[A-Za-z]:[\\/]/.test(path)) path = "/" + path.replaceAll("\\", "/");
+  else if (path.startsWith("\\\\")) path = path.replaceAll("\\", "/");
+  return `ssh://${machine}${path.split("/").map(encodeURIComponent).join("/")}`;
+}
 export const PROJECT_SORTS = { manual: "手动排序", asc: "名称 A → Z", desc: "名称 Z → A" };
 // Only retain the public owner name. Remote URLs may include private paths and credentials.
 export function githubOwner(remotes) {

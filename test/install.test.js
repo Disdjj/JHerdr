@@ -17,6 +17,19 @@ test("布局只替换侧栏列表，保留工作区结构", () => {
   assert.throws(() => buildLayout({ id: "root" }), /sidebar/);
 });
 
+test("Zed 固定在原标签栏右侧，重新生成布局不会重复插入", () => {
+  const layout = structuredClone(base);
+  const tabs = { id: "tabs", type: "block", size: { px: 42 }, window_drag: true, content: { mod: "tabs" } };
+  layout.children[1].children = [tabs];
+  const result = buildLayout(layout);
+  const bar = result.children[1].children[0];
+  assert.deepEqual(bar.size, tabs.size);
+  assert.deepEqual(bar.children[0].content, tabs.content);
+  assert.equal(bar.children[0].window_drag, true);
+  assert.deepEqual(bar.children[1].content, { mod: "jherdr-projects", props: { zedToolbar: true } });
+  assert.deepEqual(buildLayout(result), result);
+});
+
 test("隔离安装：原布局不变，重装备份，卸载保留个人状态", async t => {
   const dir = await mkdtemp(join(tmpdir(), "jherdr-install-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

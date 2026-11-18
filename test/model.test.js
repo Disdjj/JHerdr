@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { projectId, registerProject, stateOf, moveProject, dropProject, forgetProject, parseWorktrees, readRepository, buildTree, flattenTree, firstSearchHit, orderedProjects, githubOwner } from "../mods/jherdr-projects/model.js";
-import { RepositoryController } from "../mods/jherdr-projects/controller.js";
+import { RepositoryController, openInZed, openActiveFolderInZed } from "../mods/jherdr-projects/controller.js";
+import { activeZedFolder } from "../mods/jherdr-projects/model.js";
 const exec = promisify(execFile);
 const execute = async (command, args) => {
   try { const r = await exec(command, args); return { ...r, code: 0 }; }
@@ -14,6 +15,31 @@ const execute = async (command, args) => {
 };
 const project = (root, machine = null) => ({ id: projectId(machine, root + "/.git"), machine, root, commonDir: root + "/.git", name: root.split("/").pop() });
 const empty = () => ({ spaces: [], panes: [], agents: [], terminals: [], machines: [{ name: null, layout: "ready" }], focused: null });
+
+test("右上角 Zed 跟随当前标签和分屏，在对应机器定位工作树", async () => {
+  const space = { active: true, machine: "server", folder: "/repo", tabs: [{ id: "other" }, { id: "active", active: true }] };
+  const panes = [{ tab: "other", cwd: "/unrelated" }, { tab: "active", cwd: "/repo" }, { tab: "active", cwd: "/feature/src", focused: true }];
+  const target = activeZedFolder([space], panes, [{ name: "server", layout: "ready" }]);
+  assert.deepEqual(target, { folder: "/feature/src", machine: "server" });
+  assert.equal(activeZedFolder([space], panes, []), null);
+  const calls = [];
+  await openActiveFolderInZed(async (...args) => { calls.push(args); return { code: 0, stdout: "/feature\n" }; }, target);
+  assert.equal(calls[0][2].on, "server");
+  assert.deepEqual(calls[1].slice(0, 2), ["zed", ["--", "ssh://server/feature"]]);
+});
+
+test("Zed 在查看端启动：本地工作树路径作为单个参数，远端路径编码并保留 SSH 目标", async () => {
+  const calls = [];
+  const launch = async (...args) => { calls.push(args); return { code: 0 }; };
+  const folder = "/repos/项目 a#b%";
+  await openInZed(launch, folder, null);
+  await openInZed(launch, folder, "build-host");
+  assert.deepEqual(calls[0], ["zed", ["--", folder], { timeout: 15000 }]);
+  assert.deepEqual(calls[1], ["zed", ["--", "ssh://build-host/repos/%E9%A1%B9%E7%9B%AE%20a%23b%25"], { timeout: 15000 }]);
+  await assert.rejects(openInZed(launch, folder, "-oProxyCommand=other"), /别名/);
+  await assert.rejects(openInZed(launch, "relative", null), /绝对路径/);
+  await assert.rejects(openInZed(async () => ({ code: 1, stderr: "launch failed" }), folder), /launch failed/);
+});
 
 test("工作树共用本机或对应远程机器的启动图标，刷新后使用最新启动参数", async () => {
   const snap = empty();

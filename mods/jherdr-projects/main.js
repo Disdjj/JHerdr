@@ -1,9 +1,9 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { agents, panes, spaces, terminals, machines, focused, shared, setShared, exec, run, theme,
-  props, checking, pickFolder, knownAgents, nextCommand, openOverlay, closeOverlay, setAgentOrder, appHome, home, settings, readTextFile } from "herdr";
-import { STATE_KEY, LABELS, PROJECT_SORTS, orderedProjects, stateOf, moveProject, dropProject, forgetProject, buildTree, flattenTree, firstSearchHit, contains, basename, normalize } from "./model.js";
-import { RepositoryController, readAgentCatalog } from "./controller.js";
+  props, checking, pickFolder, knownAgents, nextCommand, openOverlay, closeOverlay, setAgentOrder, appHome, home, settings, readTextFile, notify } from "herdr";
+import { STATE_KEY, LABELS, PROJECT_SORTS, orderedProjects, stateOf, moveProject, dropProject, forgetProject, buildTree, flattenTree, firstSearchHit, activeZedFolder, contains, basename, normalize } from "./model.js";
+import { RepositoryController, readAgentCatalog, openActiveFolderInZed } from "./controller.js";
 import { AgentSettings, agentIcon } from "./agent-settings.js";
 
 const MOD = "jherdr-projects";
@@ -13,7 +13,7 @@ const projectActions = [
   { id: "new", title: "新建项目", icon: "folder-plus" },
   { id: "template", title: "从模板开始", icon: "layers" },
 ];
-const icon = (name, size = 14) => svg(`mods/${["more", "refresh", "sort"].includes(name) ? MOD : "workspace-chrome"}/${name}.svg`).size(size).flex_none();
+const icon = (name, size = 14) => svg(`mods/${["more", "refresh", "sort", "zed"].includes(name) ? MOD : "workspace-chrome"}/${name}.svg`).size(size).flex_none();
 const programFile = () => appHome() + "/programs.json";
 const catalogFor = machine => readAgentCatalog(() => readTextFile(programFile()), knownAgents, machine);
 const enabledAgents = async ({ on }) => (await catalogFor(on)).agents.filter(a => a.enabled);
@@ -24,6 +24,7 @@ const statusColor = (status, t) => ({ working: "#A5C68D", blocked: "#E6B56D", do
 
 export default class Projects extends View {
   init(_props, cx) {
+    if (props()?.zedToolbar) return;
     if (props()?.agentSettings) {
       this.agentSettings = new AgentSettings(() => catalogFor(null), programFile(), cx);
       return;
@@ -224,6 +225,22 @@ export default class Projects extends View {
     this.fold(project.id, false);
     openOverlay({ mod: "worktree", kind: "dialog", width: 460, height: 280,
       props: { action: "new", folder: project.root, machine: project.machine ?? null } });
+  }
+
+  renderZedToolbar(t) {
+    const target = activeZedFolder(spaces(), panes(), machines());
+    const label = target ? "用 Zed 打开 · " + (target.machine ? target.machine + " · " : "") + target.folder : "没有可打开的工作目录";
+    return h_flex().size_full().items_center().bg(t.chrome).border_b(1).border_color(t.border)
+      .child(h_flex().id("open-active-zed").h(26).px(8).gap(5).rounded(6).items_center().text_size(12)
+        .text_color(t.muted).accessibility_label("用 Zed 打开").tooltip(label)
+        .when(!target, el => el.opacity(0.4))
+        .when(target, el => el.cursor_pointer().hover(s => s.bg(t.hover).text_color(t.foreground))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click((_e, cx) => cx.spawn(async () => {
+            try { await openActiveFolderInZed(exec, target); }
+            catch (e) { notify({ title: "无法用 Zed 打开目录", body: String(e.message || e), level: "error" }); }
+          })))
+        .child(icon("zed", 14)).child("Zed"));
   }
 
   changeProject(id, fields) {
@@ -444,7 +461,7 @@ export default class Projects extends View {
     if (e.key === "escape") closeOverlay(props().overlay);
     else if (e.key === "down") this.menuIndex = (this.menuIndex + 1) % items.length;
     else if (e.key === "up") this.menuIndex = (this.menuIndex + items.length - 1) % items.length;
-    else if (e.key === "enter") { const item = items[this.menuIndex]; if (item && !item.disabled) item.action(); }
+    else if (e.key === "enter") { const item = items[this.menuIndex]; if (item && !item.disabled) item.action(cx); }
     else return;
     cx.stop_propagation(); cx.notify();
   }
@@ -455,7 +472,7 @@ export default class Projects extends View {
       .when(props().project, el => el.child(div().px(8).py(8).truncate().text_size(11).text_color(t.dim).child(props().worktree?.name || props().project.name)))
       .children(items.map((item, i) => h_flex().id(`menu-item-${i}`).h(32).px(9).gap(9).items_center().rounded(5).cursor_pointer()
         .when(i === this.menuIndex, el => el.bg(t.selected)).when(item.disabled, el => el.opacity(0.4))
-        .hover(el => el.bg(t.hover)).on_click(() => { if (!item.disabled) item.action(); })
+        .hover(el => el.bg(t.hover)).on_click((_e, cx) => { if (!item.disabled) item.action(cx); })
         .when(item.icon, el => el.child(icon(item.icon, 15).text_color(t.muted))).child(item.title)
         .when(item.checked, el => el.child(div().flex_1()).child(icon("check", 13).text_color(t.accent)))))
       .when(this.menuLoading || this.menuError, el => el.child(div().px(8).py(8).text_size(11).text_color(t.dim).child(this.menuError || "正在查找可用 Agent…")))
@@ -506,6 +523,7 @@ export default class Projects extends View {
 
   render(cx) {
     const t = theme();
+    if (props()?.zedToolbar) return this.renderZedToolbar(t);
     if (this.agentSettings) return this.agentSettings.render(t);
     if (props()?.menu) return this.renderMenu(t);
     if (this.form) return this.renderForm(t);
