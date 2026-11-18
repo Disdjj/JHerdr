@@ -3,7 +3,7 @@ import { h_flex, v_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { agents, panes, spaces, terminals, machines, focused, shared, setShared, exec, run, theme,
   props, checking, pickFolder, knownAgents, nextCommand, openOverlay, closeOverlay, setAgentOrder, appHome, home, settings, readTextFile, notify } from "herdr";
 import { STATE_KEY, LABELS, PROJECT_SORTS, orderedProjects, stateOf, moveProject, dropProject, forgetProject, buildTree, flattenTree, firstSearchHit, activeZedFolder, contains, basename, normalize } from "./model.js";
-import { RepositoryController, readAgentCatalog, openActiveFolderInZed } from "./controller.js";
+import { RepositoryController, readAgentCatalog, openActiveFolderInZed, removeWorktree } from "./controller.js";
 import { AgentSettings, agentIcon } from "./agent-settings.js";
 
 const MOD = "jherdr-projects";
@@ -24,7 +24,13 @@ const statusColor = (status, t) => ({ working: "#A5C68D", blocked: "#E6B56D", do
 
 export default class Projects extends View {
   init(_props, cx) {
-    if (props()?.zedToolbar) return;
+    if (props()?.zedToolbar) {
+      if (!checking()) cx.spawn(async () => {
+        for (;;) if (await nextCommand() === "open-zed") await this.openZed();
+      });
+      return;
+    }
+    if (props()?.removeWorktree) return;
     if (props()?.agentSettings) {
       this.agentSettings = new AgentSettings(() => catalogFor(null), programFile(), cx);
       return;
@@ -227,20 +233,49 @@ export default class Projects extends View {
       props: { action: "new", folder: project.root, machine: project.machine ?? null } });
   }
 
+  async openZed() {
+    const target = activeZedFolder(spaces(), panes(), machines());
+    if (!target) { notify({ title: "没有可打开的工作目录" }); return; }
+    try { await openActiveFolderInZed(exec, target); }
+    catch (e) { notify({ title: "无法用 Zed 打开目录", body: String(e.message || e), level: "error" }); }
+  }
+
   renderZedToolbar(t) {
     const target = activeZedFolder(spaces(), panes(), machines());
-    const label = target ? "用 Zed 打开 · " + (target.machine ? target.machine + " · " : "") + target.folder : "没有可打开的工作目录";
+    const label = target ? "用 Zed 打开（⌘O） · " + (target.machine ? target.machine + " · " : "") + target.folder : "没有可打开的工作目录";
     return h_flex().size_full().items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .child(h_flex().id("open-active-zed").h(26).px(8).gap(5).rounded(6).items_center().text_size(12)
         .text_color(t.muted).accessibility_label("用 Zed 打开").tooltip(label)
         .when(!target, el => el.opacity(0.4))
         .when(target, el => el.cursor_pointer().hover(s => s.bg(t.hover).text_color(t.foreground))
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .on_click((_e, cx) => cx.spawn(async () => {
-            try { await openActiveFolderInZed(exec, target); }
-            catch (e) { notify({ title: "无法用 Zed 打开目录", body: String(e.message || e), level: "error" }); }
-          })))
+          .on_click((_e, cx) => cx.spawn(async () => this.openZed())))
         .child(icon("zed", 14)).child("Zed"));
+  }
+
+  renderRemoval(t) {
+    const { project, worktree, overlay } = props();
+    const confirm = cx => cx.spawn(async cx => {
+      if (this.removing) return;
+      this.removing = true; this.message = null; cx.notify();
+      try {
+        await removeWorktree(exec, project, worktree);
+        run(`${MOD}.refresh`);
+        closeOverlay(overlay);
+      } catch (error) { this.message = String(error.message || error); this.removing = false; cx.notify(); }
+    });
+    return v_flex().size_full().bg(t.popover).text_color(t.foreground).text_size(13).p(16).gap(10)
+      .child(div().text_size(15).font_semibold().child("删除工作树？"))
+      .child(v_flex().id("removal-details").flex_1().min_h(0).overflow_y_scrollbar().gap(6)
+        .child(div().child(`${project.machine || "本机"} · ${worktree.name}`))
+        .child(div().child(worktree.path))
+        .child(div().text_color(t.muted).child("Git 将移除整个工作目录，包括被忽略的文件。分支保留，有未提交更改时 Git 会拒绝删除。"))
+        .when(worktree.detached, el => el.child(div().text_color(statusColor("blocked", t)).child("当前是分离 HEAD。需要保留此提交时，请先创建分支。")))
+        .when(worktree.spaces?.length || worktree.workers?.length, el => el.child(div().text_color(statusColor("blocked", t)).child("有会话关联此目录。删除后会话仍然打开，原工作目录将不可用。")))
+        .when(this.message, el => el.child(div().text_color(statusColor("blocked", t)).child(this.message))))
+      .child(h_flex().justify_end().gap(8)
+        .child(this.button("cancel-remove", "取消", () => closeOverlay(overlay), t, null, this.removing))
+        .child(this.button("confirm-remove", this.removing ? "删除中…" : "删除工作树", confirm, t, null, this.removing).bg(t.raised)));
   }
 
   changeProject(id, fields) {
@@ -435,6 +470,9 @@ export default class Projects extends View {
     if (menu === "worktree") return [
       { title: "打开工作树", action: close(() => this.openWorktree(project, worktree)), disabled: project.offline || worktree.prunable },
       ...this.launchers.map(a => ({ title: `启动 ${a.name}`, action: close(() => this.openWorktree(project, worktree, a.run)), disabled: project.offline || worktree.prunable })),
+      { title: "删除工作树…", icon: "minus", disabled: project.offline || worktree.main || Boolean(worktree.locked),
+        action: close(() => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 460, height: 300,
+          props: { removeWorktree: true, project, worktree } })) },
     ];
     const s = state();
     const index = s.projects.findIndex(p => p.id === project.id);
@@ -524,6 +562,7 @@ export default class Projects extends View {
   render(cx) {
     const t = theme();
     if (props()?.zedToolbar) return this.renderZedToolbar(t);
+    if (props()?.removeWorktree) return this.renderRemoval(t);
     if (this.agentSettings) return this.agentSettings.render(t);
     if (props()?.menu) return this.renderMenu(t);
     if (this.form) return this.renderForm(t);

@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, realpath } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, realpath, writeFile, readFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { projectId, registerProject, stateOf, moveProject, dropProject, forgetProject, parseWorktrees, readRepository, buildTree, flattenTree, firstSearchHit, orderedProjects, githubOwner } from "../mods/jherdr-projects/model.js";
-import { RepositoryController, openInZed, openActiveFolderInZed } from "../mods/jherdr-projects/controller.js";
+import { RepositoryController, openInZed, openActiveFolderInZed, removeWorktree } from "../mods/jherdr-projects/controller.js";
 import { activeZedFolder } from "../mods/jherdr-projects/model.js";
 const exec = promisify(execFile);
 const execute = async (command, args) => {
@@ -91,6 +91,32 @@ test("没有首次提交的仓库仍可固定", async t => {
   await exec("git", ["init", "-b", "main", root]);
   const result = await readRepository(execute, root);
   assert.equal(result.worktrees[0].branch, "main");
+});
+
+test("删除前复核工作树，拒绝主目录、锁和未提交文件，成功后保留分支", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "jherdr-remove-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const root = join(dir, "repo"), linked = join(dir, "linked checkout");
+  const git = (...args) => exec("git", ["-C", root, ...args]);
+  await exec("git", ["init", "-b", "main", root]);
+  await git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+  await git("worktree", "add", "-b", "feature", linked);
+  const { project, worktrees: [main, feature] } = await readRepository(execute, root);
+  const remove = target => removeWorktree(execute, project, target);
+  await assert.rejects(remove(main), /主工作树/);
+  await assert.rejects(remove({ ...feature, branch: "stale" }), /工作树已变化/);
+  await git("worktree", "lock", linked);
+  await assert.rejects(remove(feature), /锁定/);
+  await git("worktree", "unlock", linked);
+  const file = join(linked, "unfinished");
+  await writeFile(file, "keep");
+  await assert.rejects(remove(feature));
+  assert.equal(await readFile(file, "utf8"), "keep");
+  await rm(file);
+  await remove(feature);
+  await assert.rejects(access(linked), { code: "ENOENT" });
+  await git("show-ref", "--verify", "refs/heads/feature");
+  await assert.rejects(remove(feature), /工作树已变化/);
 });
 
 test("同名项目和同路径远程项目不合并；关闭会话不改变固定顺序", () => {

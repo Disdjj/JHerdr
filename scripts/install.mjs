@@ -17,6 +17,26 @@ const json = async path => JSON.parse(await readFile(path, "utf8"));
 const atomic = async (path, content) => { await mkdir(dirname(path), { recursive: true }); const tmp = path + `.tmp-${process.pid}`; await writeFile(tmp, content); await rename(tmp, path); };
 const command = (...argv) => execFileSync("herdr-app", argv, { encoding: "utf8" });
 
+async function updateZedShortcut(previous, uninstall = false) {
+  const path = join(app, "keys.json"), section = "layout:" + LAYOUT, action = MOD + ".open-zed";
+  const keys = await exists(path) ? await json(path) : {};
+  const binding = keys[section]?.["cmd-o"];
+  if (uninstall) {
+    if (!previous?.ownsZedShortcut || binding !== action) return false;
+    delete keys[section]["cmd-o"];
+    if (!Object.keys(keys[section]).length) delete keys[section];
+  } else {
+    if (binding !== undefined) {
+      if (binding !== action) console.log("已保留自定义的 ⌘O 绑定。");
+      return binding === action && Boolean(previous?.ownsZedShortcut);
+    }
+    keys[section] ??= {};
+    keys[section]["cmd-o"] = action;
+  }
+  await atomic(path, JSON.stringify(keys, null, 2) + "\n");
+  return !uninstall;
+}
+
 async function main() {
   if (args.includes("--only-layout") || args.includes("--delete-other-layouts")) throw new Error("已移除批量清理开关：Herdr 默认布局必须保留，安装只管理 JHerdr 自己的文件。");
   const previous = await exists(recordPath) ? await json(recordPath) : null;
@@ -38,6 +58,7 @@ async function main() {
         if (current.layout === LAYOUT) command("do", "layout.switch", JSON.stringify({ name: returnLayout }));
       }
       // Only this install's exact paths; no project, terminal or worktree is touched.
+      await updateZedShortcut(previous, true);
       for (const relative of previous.files) await rm(join(app, relative), { force: true });
       await rm(recordPath, { force: true });
     }
@@ -77,7 +98,8 @@ async function main() {
   for (const file of previous?.files || []) if (!files.includes(file)) await rm(join(app, file), { force: true });
   await atomic(join(app, "layouts", "jherdr-preview.svg"), await readFile(join(root, "design", "layout-preview.svg")));
   await atomic(join(app, "layouts", LAYOUT + ".json"), JSON.stringify(layout, null, 2) + "\n");
-  await atomic(recordPath, JSON.stringify({ version: 1, source: root, base: source, files }, null, 2) + "\n");
+  const ownsZedShortcut = await updateZedShortcut(previous);
+  await atomic(recordPath, JSON.stringify({ version: 1, source: root, base: source, files, ownsZedShortcut }, null, 2) + "\n");
   if (args.includes("--activate")) {
     if (app !== resolve(process.env.HERDR_APP_HOME || join(homedir(), ".config/herdr-app"))) throw new Error("不能激活另一个 app-home 的布局；文件已安装。");
     command("do", "layout.switch", JSON.stringify({ name: LAYOUT }));

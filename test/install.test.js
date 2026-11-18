@@ -36,6 +36,9 @@ test("隔离安装：原布局不变，重装备份，卸载保留个人状态",
   await mkdir(join(dir, "layouts"));
   const original = JSON.stringify(base);
   await writeFile(join(dir, "layouts/main.json"), original);
+  const keysPath = join(dir, "keys.json");
+  const keys = { global: { "cmd-o": "test.global" }, "layout:jherdr": { "alt-x": "test.other" } };
+  await writeFile(keysPath, JSON.stringify(keys));
   const command = (...args) => exec(process.execPath, [resolve("scripts/install.mjs"), "--app-home", dir, "--skip-check", ...args]);
   await command("--dry-run");
   await assert.rejects(access(join(dir, "layouts/jherdr.json")));
@@ -43,9 +46,18 @@ test("隔离安装：原布局不变，重装备份，卸载保留个人状态",
   await writeFile(join(dir, "shared.json"), '{"personal":"keep"}');
   await command();
   assert.equal(await readFile(join(dir, "layouts/main.json"), "utf8"), original);
+  assert.deepEqual(JSON.parse(await readFile(keysPath, "utf8")), {
+    ...keys, "layout:jherdr": { "alt-x": "test.other", "cmd-o": "jherdr-projects.open-zed" },
+  });
   await command("--uninstall");
+  assert.deepEqual(JSON.parse(await readFile(keysPath, "utf8")), keys);
   await assert.rejects(access(join(dir, "layouts/jherdr.json")));
   assert.equal(await readFile(join(dir, "shared.json"), "utf8"), '{"personal":"keep"}');
+  keys["layout:jherdr"]["cmd-o"] = "test.custom";
+  await writeFile(keysPath, JSON.stringify(keys));
+  await command();
+  await command("--uninstall");
+  assert.deepEqual(JSON.parse(await readFile(keysPath, "utf8")), keys);
 });
 
 test("安装拒绝覆盖不属于本扩展的同名文件", async t => {

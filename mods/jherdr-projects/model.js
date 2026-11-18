@@ -141,7 +141,7 @@ export function parseWorktrees(text) {
     else if (current && ["bare", "detached", "locked", "prunable"].includes(key)) current[key] = value || true;
   }
   if (current) records.push(current);
-  return records.filter(w => !w.bare).map(w => ({ ...w, name: w.branch || (w.detached ? `detached · ${(w.head || "").slice(0, 7)}` : basename(w.path)) }));
+  return records.filter(w => !w.bare).map(w => ({ ...w, main: w === records[0], name: w.branch || (w.detached ? `detached · ${(w.head || "").slice(0, 7)}` : basename(w.path)) }));
 }
 
 export async function readRepository(execute, folder, machine = null, knownCommonDir = null) {

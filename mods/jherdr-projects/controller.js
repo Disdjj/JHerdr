@@ -1,6 +1,19 @@
 import { agentCatalog, parseProgramFile } from "./agent-config.js";
 
-import { stateOf, registerProject, readRepository, normalize, snapshotWorkers, zedTarget } from "./model.js";
+import { stateOf, registerProject, readRepository, parseWorktrees, normalize, snapshotWorkers, zedTarget } from "./model.js";
+
+export async function removeWorktree(execute, project, target) {
+  const git = async args => {
+    const result = await execute("git", ["--git-dir", project.commonDir, "worktree", ...args], { on: project.machine, timeout: 60000 });
+    if (result.code !== 0) throw new Error(result.stderr.trim() || "Git 无法操作工作树");
+    return result.stdout;
+  };
+  const list = parseWorktrees(await git(["list", "--porcelain", "-z"]));
+  const current = list.find(w => w.path === target.path);
+  if (!current || current.branch !== target.branch || (current.detached && current.head !== target.head)) throw new Error("工作树已变化，请刷新并重新选择");
+  if (current.main || current.locked) throw new Error("主工作树或已锁定的工作树无法删除");
+  await git(["remove", "--", current.path]);
+}
 
 export async function openInZed(execute, folder, machine) {
   const result = await execute("zed", ["--", zedTarget(folder, machine)], { timeout: 15000 });
