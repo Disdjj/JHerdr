@@ -1,6 +1,6 @@
 # JHerdr
 
-把 Herdr 左侧导航组织为 **Project → Worktree → Worker**。项目固定保留，分支与执行者放在同一棵树里；沿用原有聊天、终端、文件和改动面板。
+把 Herdr 左侧导航组织为 **Project → Worktree → Worker**。项目固定保留，分支与执行者放在同一棵树里；沿用原有聊天、终端和文件面板。Changes 面板跟随当前终端的 Git 工作树。
 
 这是 Herdr 桌面扩展，不是 Herdr fork，也不替换 herdr-core。可基于 `main` 或 `shepherdr` 布局安装。
 
@@ -12,6 +12,7 @@
 - 项目下列出 `git worktree list` 返回的工作目录，不要求先打开 Space。
 - 项目／工作树箭头：展开或收起；点击工作树名称：打开已有工作空间或创建对应的终端空间。
 - 在 JHerdr 布局按 **⌘O**，或点主工作区右上角的 **Zed**，打开当前标签页中所选终端所在的工作树；普通目录直接打开。本机需能运行 `zed`，远程项目通过同名 SSH Host 在本机 Zed 中打开。参见 [Zed 远程开发文档](https://zed.dev/docs/remote-development)。
+- Changes 在切换仓库或工作树时立即清空旧列表和提交信息。Commit 将当前面板所示工作树的全部改动暂存并提交。
 - 点击 Worker：已有 pane 时直接切换；后台 Worker 直接接入主工作区的标签页，不弹出预览，也不会重新启动它。
 - 鼠标移到工作树行时，该行显示对应机器已安装的 Agent 图标。点击图标即可启动，移出后分支名称重新占满该行。侧栏较窄时图标换到分支名下方，右键或按空格也可打开操作菜单。
 - 点击「项目」右侧的齿轮打开 **Agent 设置**。勾选要使用的 Agent、编辑启动命令或添加自定义程序，然后保存。启用开关作用于 JHerdr 工作树图标、右键菜单和仓库的命令行启动入口。可执行程序须在目标机器上可用。命令按程序名和参数解析，支持引号分组，直接按参数执行。取消会放弃本次编辑。
@@ -48,7 +49,7 @@ npm run install:herdr -- --base shepherdr --activate
 
 Herdr 自带的 `main`、`terminals`、`win98` 布局始终保留。JHerdr 不自动删除其他布局；此前的自动清理规则会在安装时关闭，`--only-layout` 与 `--delete-other-layouts` 已移除。下载的自定义布局按明确名称单独处理，不使用全删规则。
 
-安装会在 `keys.json` 的 `layout:jherdr` 中添加 ⌘O 快捷键，已有的同布局绑定优先。卸载时只清理本扩展添加且未被修改的绑定。扩展文件安装到 `~/.config/herdr-app/mods/jherdr-projects/`、`layouts/jherdr.json`、预览图和 `data/jherdr/` 下的创建脚本与安装记录。重装会先备份本扩展旧文件；遇到不属于本扩展的同名文件会停止。源码保留在当前仓库，修改后重新运行安装即可热更新。
+安装会在 `keys.json` 的 `layout:jherdr` 中添加 ⌘O 快捷键，已有的同布局绑定优先。卸载时只清理本扩展添加且未被修改的绑定。扩展文件安装到 Herdr 配置目录的 `mods/jherdr-projects/`、`mods/jherdr-changes/`、`layouts/jherdr.json`、预览图和 `data/jherdr/` 下的创建脚本与安装记录。重装会先备份本扩展旧文件；遇到不属于本扩展的同名文件会停止。源码保留在当前仓库，修改后重新运行安装即可热更新。
 
 恢复原布局不影响运行中的 Agent：
 

@@ -21,6 +21,8 @@ export function buildLayout(source) {
   sidebar.max = 480;
   lists.children = [{ id: "spaces", type: "block", size: { weight: 1 }, min: 100, content: { mod: MOD } }];
   lists.resizable = false;
+  const changes = find(layout, "changes");
+  if (changes?.content?.mod === "changes") changes.content.mod = "jherdr-changes";
   const tabs = find(layout, "tabs");
   if (tabs?.type === "block") {
     const { content, window_drag } = tabs;

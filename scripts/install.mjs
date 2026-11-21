@@ -75,13 +75,20 @@ async function main() {
     base = await json(join(app, "layouts", `${LAYOUT}.json`));
   }
   const layout = buildLayout(base);
-  const modFiles = (await readdir(join(root, "mods", MOD))).filter(f => /\.(js|mjs|json|svg)$/.test(f));
+  const modules = [MOD, "jherdr-changes"];
+  const modFiles = [];
+  for (const mod of modules) {
+    const files = await readdir(join(root, "mods", mod));
+    for (const file of files.filter(f => /\.(js|mjs|json|svg)$/.test(f))) modFiles.push(`mods/${mod}/${file}`);
+  }
   const helpers = ["create-project.mjs", "github-avatar.mjs"];
-  const files = [...helpers.map(f => "data/jherdr/bin/" + f), ...modFiles.map(f => `mods/${MOD}/${f}`), `layouts/${LAYOUT}.json`, "layouts/jherdr-preview.svg"];
+  const files = [...helpers.map(f => "data/jherdr/bin/" + f), ...modFiles, `layouts/${LAYOUT}.json`, "layouts/jherdr-preview.svg"];
   for (const file of files) if (await exists(join(app, file)) && !previous?.files.includes(file)) throw new Error(`目标文件不属于本安装，已停止：${file}`);
   console.log(`基线：${source}；安装：${app}；文件：${files.length}`);
   if (args.includes("--dry-run")) { console.log("预览完成，没有写入文件。"); return; }
-  if (!args.includes("--skip-check")) process.stdout.write(command("check", join(root, "mods", MOD)));
+  if (!args.includes("--skip-check")) {
+    for (const mod of modules) process.stdout.write(command("check", join(root, "mods", mod)));
+  }
   // Migrate previous installations away from automatic deletion before any hot reload.
   await restoreLayouts(app);
   if (previous) {
@@ -93,8 +100,9 @@ async function main() {
   }
   // Dependencies first, entry point last, so a hot reload never sees missing imports.
   for (const file of helpers) await atomic(join(app, "data/jherdr/bin", file), await readFile(join(root, "scripts", file)));
-  for (const file of modFiles.filter(f => f !== "main.js")) await atomic(join(app, "mods", MOD, file), await readFile(join(root, "mods", MOD, file)));
-  await atomic(join(app, "mods", MOD, "main.js"), await readFile(join(root, "mods", MOD, "main.js")));
+  for (const file of [...modFiles.filter(f => !f.endsWith("/main.js")), ...modFiles.filter(f => f.endsWith("/main.js"))]) {
+    await atomic(join(app, file), await readFile(join(root, file)));
+  }
   for (const file of previous?.files || []) if (!files.includes(file)) await rm(join(app, file), { force: true });
   await atomic(join(app, "layouts", "jherdr-preview.svg"), await readFile(join(root, "design", "layout-preview.svg")));
   await atomic(join(app, "layouts", LAYOUT + ".json"), JSON.stringify(layout, null, 2) + "\n");
