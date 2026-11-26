@@ -76,6 +76,7 @@ export function stateOf(raw) {
   return {
     version: 1,
     sort: Object.hasOwn(PROJECT_SORTS, source.sort) ? source.sort : "manual",
+    activeOnly: Boolean(source.activeOnly),
     projects: (Array.isArray(source.projects) ? source.projects : []).filter(p => {
       if (!p || typeof p.id !== "string" || typeof p.root !== "string" || typeof p.commonDir !== "string" || unique.has(p.id)) return false;
       unique.add(p.id);
@@ -233,16 +234,49 @@ export function buildTree(projects, cache, snapshot) {
   return { projects: trees, otherSpaces: snapshot.spaces.filter(s => !linkedSpaces.has(s.id)) };
 }
 
-export function flattenTree(tree, folded = {}, query = "") {
+export function activeSummary(tree) {
+  let total = 0, working = 0, blocked = 0;
+  for (const project of tree.projects) {
+    if (project.offline) continue;
+    for (const worktree of project.worktrees) {
+      for (const worker of worktree.workers) {
+        if (worker.status === "offline") continue;
+        total++;
+        if (worker.status === "working") working++;
+        else if (worker.status === "blocked") blocked++;
+      }
+    }
+  }
+  for (const space of tree.otherSpaces) {
+    if (!space.status) continue;
+    total++;
+    if (space.status === "working") working++;
+    else if (space.status === "blocked") blocked++;
+  }
+  return { total, working, blocked };
+}
+
+export function visibleOtherSpaces(otherSpaces, query = "", activeOnly = false) {
+  const q = query.trim().toLowerCase();
+  return otherSpaces.filter(space =>
+    (!activeOnly || Boolean(space.status)) &&
+    (!q || `${space.name} ${space.folder}`.toLowerCase().includes(q))
+  );
+}
+
+export function flattenTree(tree, folded = {}, query = "", activeOnly = false) {
   const rows = [], q = query.trim().toLowerCase();
   const match = (...s) => !q || s.filter(Boolean).join(" ").toLowerCase().includes(q);
   for (const project of tree.projects) {
+    if (activeOnly && project.offline) continue;
     const full = match(project.name, project.root, project.machine);
     const children = [];
     for (const worktree of project.worktrees) {
+      const liveWorkers = activeOnly ? worktree.workers.filter(w => w.status !== "offline") : worktree.workers;
+      if (activeOnly && !liveWorkers.length) continue;
       const branchMatch = match(worktree.name, worktree.path);
       const workers = [];
-      for (const worker of worktree.workers) {
+      for (const worker of liveWorkers) {
         const direct = match(worker.name, worker.title, worker.address, LABELS[worker.status]);
         if (direct || full || branchMatch) workers.push({ kind: "worker", key: worker.address, project, worktree, worker, depth: 2, direct });
       }
@@ -250,7 +284,7 @@ export function flattenTree(tree, folded = {}, query = "") {
       children.push({ kind: "worktree", key: worktree.id, project, worktree, depth: 1, direct: branchMatch });
       if (q || !folded[worktree.id]) children.push(...workers);
     }
-    if (!full && !children.length) continue;
+    if (activeOnly ? !children.length : (!full && !children.length)) continue;
     rows.push({ kind: "project", key: project.id, project, depth: 0, direct: full });
     if (q || !folded[project.id]) rows.push(...children);
   }

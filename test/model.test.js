@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { projectId, registerProject, stateOf, moveProject, dropProject, forgetProject, parseWorktrees, readRepository, buildTree, flattenTree, firstSearchHit, orderedProjects, githubOwner } from "../mods/jherdr-projects/model.js";
+import { projectId, registerProject, stateOf, moveProject, dropProject, forgetProject, parseWorktrees, readRepository, buildTree, flattenTree, firstSearchHit, orderedProjects, githubOwner, activeSummary, visibleOtherSpaces } from "../mods/jherdr-projects/model.js";
 import { RepositoryController, openInZed, openActiveFolderInZed, removeWorktree } from "../mods/jherdr-projects/controller.js";
 import { activeZedFolder } from "../mods/jherdr-projects/model.js";
 const exec = promisify(execFile);
@@ -285,4 +285,49 @@ test("同一机器上的同名项目显示能区分来源的最短父路径", ()
   const projects = ["/a/tools/demo", "/b/tools/demo", "/code/demo", "/unique"].map(path => project(path));
   const tree = buildTree(projects, {}, empty());
   assert.deepEqual(tree.projects.map(p => p.qualifier), ["a/tools", "b/tools", "code", undefined]);
+});
+
+test("活动视图保留含空闲在内的存活 Agent，隐藏无 Agent 的仓库、空分支、离线机器与普通目录", () => {
+  const idleRepo = project("/idle-repo");
+  const busyRepo = project("/busy-repo");
+  const emptyRepo = project("/empty-repo");
+  const offlineRepo = project("/offline-repo", "down-host");
+  const cache = {
+    [idleRepo.id]: { worktrees: [{ path: "/idle-repo", name: "main" }, { path: "/idle-repo-wt", name: "unused-branch" }] },
+    [busyRepo.id]: { worktrees: [{ path: "/busy-repo", name: "feat" }] },
+    [emptyRepo.id]: { worktrees: [{ path: "/empty-repo", name: "main" }] },
+    [offlineRepo.id]: { worktrees: [{ path: "/offline-repo", name: "main" }] },
+  };
+  const snap = empty();
+  snap.machines.push({ name: "down-host", layout: "unavailable" });
+  snap.terminals = [
+    { address: "t1", cwd: "/idle-repo", state: "live", status: "idle", program: { name: "Codex", agent: true } },
+    { address: "t2", cwd: "/busy-repo", state: "live", status: "working", program: { name: "Antigravity", agent: true } },
+    { address: "down-host/t3", cwd: "/offline-repo", state: "live", status: "working", program: { name: "Claude", agent: true } },
+  ];
+  snap.spaces = [
+    { id: "s-plain", name: "downloads", folder: "/tmp/downloads", status: null, tabs: [] },
+    { id: "s-agent", name: "scratch", folder: "/tmp/scratch", status: "idle", tabs: [] },
+  ];
+  const state = stateOf({ projects: [idleRepo, busyRepo, emptyRepo, offlineRepo], activeOnly: true, folded: { [idleRepo.id]: true } });
+  assert.equal(state.activeOnly, true);
+  assert.equal(forgetProject(state, emptyRepo.id).activeOnly, true);
+  const tree = buildTree(state.projects, cache, snap);
+  assert.deepEqual(activeSummary(tree), { total: 3, working: 1, blocked: 0 });
+  // 活动视图使用独立展开态，不改变原全部视图的折叠记录，并过滤掉空分支与空项目
+  const activeRows = flattenTree(tree, {}, "", true);
+  assert.deepEqual(activeRows.map(r => `${r.kind}:${r[r.kind].name}`), [
+    "project:idle-repo",
+    "worktree:main",
+    "worker:Codex",
+    "project:busy-repo",
+    "worktree:feat",
+    "worker:Antigravity",
+  ]);
+  // 叠加搜索时仍不会引入无存活 Agent 的空项目
+  assert.deepEqual(flattenTree(tree, {}, "empty", true), []);
+  assert.deepEqual(flattenTree(tree, {}, "codex", true).map(r => r.kind), ["project", "worktree", "worker"]);
+  // 其他工作空间仅保留有存活 Agent 状态的入口
+  assert.deepEqual(visibleOtherSpaces(tree.otherSpaces, "", true).map(s => s.id), ["s-agent"]);
+  assert.deepEqual(visibleOtherSpaces(tree.otherSpaces, "", false).map(s => s.id), ["s-plain", "s-agent"]);
 });

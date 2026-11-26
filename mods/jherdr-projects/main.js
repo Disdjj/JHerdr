@@ -2,7 +2,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { agents, panes, spaces, terminals, machines, focused, shared, setShared, exec, run, theme,
   props, checking, pickFolder, knownAgents, nextCommand, openOverlay, closeOverlay, setAgentOrder, appHome, home, settings, readTextFile, notify } from "herdr";
-import { STATE_KEY, LABELS, PROJECT_SORTS, orderedProjects, stateOf, moveProject, dropProject, forgetProject, buildTree, flattenTree, firstSearchHit, activeZedFolder, contains, basename, normalize } from "./model.js";
+import { STATE_KEY, LABELS, PROJECT_SORTS, orderedProjects, stateOf, moveProject, dropProject, forgetProject, buildTree, flattenTree, firstSearchHit, activeSummary, visibleOtherSpaces, activeZedFolder, contains, basename, normalize } from "./model.js";
 import { RepositoryController, readAgentCatalog, openActiveFolderInZed, removeWorktree } from "./controller.js";
 import { AgentSettings, agentIcon } from "./agent-settings.js";
 
@@ -44,6 +44,9 @@ export default class Projects extends View {
     this.adding = false;
     this.items = [];
     this.message = null;
+    this.activeFolded = {};
+    this.undoToken = 0;
+    this.undoToast = null;
     if (props()?.menu) {
       this.menuLoading = props().menu === "worktree";
       this.launchers = [];
@@ -67,6 +70,7 @@ export default class Projects extends View {
     this.controller = new RepositoryController({ execute: exec, readState: state, writeState: save, snapshot, listAgents: enabledAgents, avatarScript: appHome() + "/data/jherdr/bin/github-avatar.mjs", changed: () => cx.notify() });
     // `check` must never discover projects or write persistent user state.
     if (checking()) return;
+    if (shared("jherdr.undo")) setShared("jherdr.undo", null);
     cx.spawn(async () => this.controller.refresh());
     cx.timer.every(10000, cx => { cx.spawn(async () => this.controller.refresh()); });
     cx.spawn(async cx => {
@@ -76,6 +80,9 @@ export default class Projects extends View {
         else if (command === "agent-settings") this.showAgentSettings();
         else if (command === "agents-updated") await this.controller.invalidateLaunchers();
         else if (command === "refresh") await this.controller.refresh(true);
+        else if (command === "notify-undo") this.showUndoToast(cx);
+        else if (command === "undo") this.restore();
+        else if (command === "toggle-active") this.setActiveOnly(!state().activeOnly);
         else if (command === "add" && !this.form && !this.adding) this.projectMenu();
         else if (projectActions.some(a => a.id === command) && !this.form && !this.adding) {
           if (command === "open-local") await this.add(cx);
@@ -107,6 +114,7 @@ export default class Projects extends View {
     const result = await this.controller.resolveFolder(folder, allowPlain);
     if (!result) return;
     this.input.set_value(""); this.query = "";
+    this.setActiveOnly(false);
     if (result.plain) {
       const existing = spaces().find(s => !s.machine && normalize(s.folder) === normalize(folder));
       if (existing) run("space.select", { id: existing.id });
@@ -175,8 +183,24 @@ export default class Projects extends View {
     finally { f.busy = false; cx.notify(); }
   }
 
+  foldedMap(s = state()) {
+    return s.activeOnly ? this.activeFolded : s.folded;
+  }
+
+  setActiveOnly(activeOnly) {
+    const s = state();
+    if (s.activeOnly === activeOnly) return;
+    this.activeFolded = {};
+    this.selected = null;
+    save({ ...s, activeOnly });
+  }
+
   fold(key, value) {
     const s = state();
+    if (s.activeOnly) {
+      this.activeFolded[key] = value ?? !this.activeFolded[key];
+      return;
+    }
     s.folded[key] = value ?? !s.folded[key];
     save(s);
   }
@@ -228,6 +252,7 @@ export default class Projects extends View {
 
   newWorktree(project) {
     if (project.offline) return;
+    this.setActiveOnly(false);
     this.fold(project.id, false);
     openOverlay({ mod: "worktree", kind: "dialog", width: 460, height: 280,
       props: { action: "new", folder: project.root, machine: project.machine ?? null } });
@@ -313,7 +338,7 @@ export default class Projects extends View {
       if (row.kind === "project" || row.kind === "worktree") this.fold(row.key, false);
       else this.activate(row, cx);
     } else if (e.key === "left" && row) {
-      if ((row.kind === "project" || row.kind === "worktree") && !state().folded[row.key]) this.fold(row.key, true);
+      if ((row.kind === "project" || row.kind === "worktree") && !this.foldedMap()[row.key]) this.fold(row.key, true);
       else { const parent = row.kind === "worker" ? row.worktree.id : row.project?.id; next = Math.max(0, rows.findIndex(r => r.key === parent)); }
     } else if ((e.key === "space" || e.key === "f10") && row) this.context(row);
     else if (e.key === "tab") { this.input.focus(); cx.stop_propagation(); return; }
@@ -396,9 +421,10 @@ export default class Projects extends View {
     return group.child(line.child(strip.flex_none()));
   }
 
-  row(row, t, folded, marked) {
+  row(row, t, folded, marked, activeOnly = false) {
     const { kind, project, worktree, worker } = row;
     const isFolded = Boolean(folded[row.key]) && !this.query.trim();
+    const canDrag = kind === "project" && !activeOnly && !this.query.trim();
     const active = marked === row.key;
     const selected = this.selected === row.key || (this.inputFocused && this.query.trim() && this.selected == null && row === this.firstMatch);
     const label = kind === "project" ? project.name : kind === "worktree" ? worktree.name : kind === "worker" ? worker.name : row.space.name;
@@ -412,13 +438,13 @@ export default class Projects extends View {
       .on_mouse_down("left", e => {
         this.handle.focus();
         this.suppressRowClick = false;
-        this.projectDrag = kind === "project" ? { source: row.key, pinned: Boolean(project.pinned), start: e.position } : null;
+        this.projectDrag = canDrag ? { source: row.key, pinned: Boolean(project.pinned), start: e.position } : null;
       })
       .on_mouse_move((e, cx) => this.trackProjectDrag(row, e, cx))
       .on_mouse_up("left", (e, cx) => this.endProjectDrag(cx, row, e))
       .on_mouse_down("right", () => this.context(row))
       .on_click((_e, cx) => { if (!this.suppressRowClick) this.activate(row, cx); });
-    if (kind === "project") {
+    if (canDrag) {
       const drag = this.projectDrag;
       line = line.relative().cursor_grab()
         .when(drag?.active && drag.source === row.key, el => el.opacity(0.6).cursor_grabbing())
@@ -429,7 +455,7 @@ export default class Projects extends View {
       line = line.child(div().w(12).flex_none());
     } else if (kind === "project" || kind === "worktree") line = line.child(div().id(`fold-${row.key}`).w(12).h(24).flex_none().flex().items_center().justify_center()
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .tooltip(isFolded ? "展开" : "收起").on_click((_e, cx) => { cx.stop_propagation(); this.fold(row.key); })
+      .tooltip(isFolded ? "展开" : "收起").on_click((_e, cx) => { cx.stop_propagation(); this.fold(row.key); cx.notify(); })
       .child(icon(isFolded ? "chevron-right" : "chevron-down", 11)));
     if (kind === "project") {
       const avatar = this.controller.avatars.get(project.githubOwner)?.path;
@@ -483,13 +509,14 @@ export default class Projects extends View {
       { title: "新建工作树", icon: "plus", action: close(() => this.newWorktree(project)), disabled: project.offline },
       { title: "打开项目", action: close(() => this.openWorktree(project, project.worktrees[0] || { path: project.root, name: project.name })), disabled: project.offline },
       { title: pinned ? "取消置顶" : "置顶项目", icon: pinned ? "pin-off" : "pin", action: close(() => this.changeProject(project.id, { pinned: !pinned })) },
-      { title: "上移项目", action: close(() => save(moveProject(state(), project.id, -1))), disabled: s.sort !== "manual" || position <= 0 },
-      { title: "下移项目", action: close(() => save(moveProject(state(), project.id, 1))), disabled: s.sort !== "manual" || position < 0 || position >= peers.length - 1 },
+      { title: "上移项目", action: close(() => save(moveProject(state(), project.id, -1))), disabled: s.sort !== "manual" || s.activeOnly || position <= 0 },
+      { title: "下移项目", action: close(() => save(moveProject(state(), project.id, 1))), disabled: s.sort !== "manual" || s.activeOnly || position < 0 || position >= peers.length - 1 },
       { title: "刷新工作树", action: close(() => run(`${MOD}.refresh`)) },
       { title: "从侧栏移除", action: close(() => {
         const current = state(), at = current.projects.findIndex(p => p.id === project.id);
         if (at >= 0) setShared("jherdr.undo", { project: current.projects[at], index: at });
         save(forgetProject(current, project.id));
+        if (at >= 0) run(`${MOD}.notify-undo`);
       }) },
     ];
   }
@@ -517,7 +544,35 @@ export default class Projects extends View {
       .when(props().menu === "project", el => el.child(div().px(8).py(6).text_size(10.5).text_color(t.dim).child("移除只隐藏入口，不删除文件或会话")));
   }
 
+  dismissUndoToast() {
+    if (!this.undoToast) return;
+    const id = this.undoToast;
+    this.undoToast = null;
+    try { closeOverlay(id); } catch {}
+  }
+
+  showUndoToast(cx) {
+    const undo = shared("jherdr.undo");
+    if (!undo?.project) return;
+    this.dismissUndoToast();
+    const token = ++this.undoToken;
+    this.undoToast = notify({
+      title: `已从侧栏移除 ${undo.project.name}`,
+      body: "点击撤销",
+      timeout: 5000,
+      action: { name: `${MOD}.undo` },
+    });
+    cx.spawn(async cx => {
+      await cx.sleep(5000);
+      if (this.undoToken !== token) return;
+      this.dismissUndoToast();
+      if (shared("jherdr.undo")) setShared("jherdr.undo", null);
+    });
+  }
+
   restore() {
+    this.undoToken++;
+    this.dismissUndoToast();
     const undo = shared("jherdr.undo");
     if (!undo?.project) return;
     const s = state();
@@ -567,43 +622,55 @@ export default class Projects extends View {
     if (props()?.menu) return this.renderMenu(t);
     if (this.form) return this.renderForm(t);
     const s = state(), snap = snapshot(), tree = buildTree(orderedProjects(s), this.controller.cache, snap);
-    const rows = flattenTree(tree, s.folded, this.query);
+    const folded = this.foldedMap(s);
+    const rows = flattenTree(tree, folded, this.query, s.activeOnly);
     const query = this.query.trim().toLowerCase();
-    const other = tree.otherSpaces.filter(space => `${space.name} ${space.folder}`.toLowerCase().includes(query))
+    const other = visibleOtherSpaces(tree.otherSpaces, this.query, s.activeOnly)
       .map(space => ({ kind: "space", key: `space-${space.id}`, depth: 0, space, direct: true }));
+    const summary = activeSummary(tree);
     this.items = [...rows, ...other];
     this.firstMatch = firstSearchHit(this.items, query);
     const active = rows.find(row => row.worker?.active) || rows.find(row => row.kind === "worktree" && row.worktree.active)
       || other.find(row => row.space.active) || rows.find(row => row.kind === "project" && row.project.active);
     setAgentOrder(rows.filter(r => r.kind === "worker").map(r => r.worker.address));
-    const undo = shared("jherdr.undo");
+    const countColor = summary.blocked ? "#E6B56D" : summary.working ? "#A5C68D" : (s.activeOnly ? t.muted : t.dim);
+    const filterTab = (id, label, on, badge, tip, select) => h_flex().id(id).h(22).px(7).gap(4).rounded(5).items_center()
+      .text_size(11.5).cursor_pointer().tooltip(tip).accessibility_label(tip)
+      .when(on, el => el.bg(t.selected).text_color(t.foreground).font_medium())
+      .when(!on, el => el.text_color(t.muted).hover(el => el.text_color(t.foreground)))
+      .on_click((_e, cx) => { cx.stop_propagation(); select(); cx.notify(); })
+      .child(label)
+      .when(badge > 0, el => el.child(div().text_size(10.5).text_color(countColor).child(String(badge))));
     return v_flex().id("jherdr-projects").size_full().min_h(0).bg(t.chrome).text_color(t.foreground)
       .on_size_change((size, cx) => { if (this.sidebarWidth !== size.width) { this.sidebarWidth = size.width; cx.notify(); } })
       .track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
-      .child(h_flex().h(39).px(15).gap(6).flex_none().items_center()
-        .child(div().flex_1().text_size(12).font_medium().text_color(t.muted).child("项目"))
-        .child(this.button("sort-projects", "项目排序", () => openOverlay({ mod: MOD, kind: "popup", width: 178, height: 108, props: { menu: "sort" } }), t, "sort"))
-        .child(this.button("agent-settings", "Agent 设置", () => this.showAgentSettings(), t, "settings"))
-        .child(this.button("refresh-projects", this.controller.busy ? "正在刷新" : "刷新工作树", cx => cx.spawn(async () => this.controller.refresh(true)), t, "refresh", this.controller.busy))
-        .child(this.button("add-project", "添加项目", () => this.projectMenu(this.menuBounds), t, "folder", this.adding)
-          .on_mouse_down("left", e => { this.menuBounds = e.bounds; })))
+      .child(h_flex().h(39).px(10).gap(6).flex_none().items_center().justify_between()
+        .child(h_flex().h(26).p(2).gap(2).rounded(6).bg(t.background).items_center().flex_none()
+          .child(filterTab("filter-all", "全部", !s.activeOnly, 0, "显示全部项目", () => this.setActiveOnly(false)))
+          .child(filterTab("filter-active", "活动", s.activeOnly, summary.total, "只看有活动 Agent 的项目", () => this.setActiveOnly(true))))
+        .child(h_flex().gap(2).items_center().flex_none()
+          .child(this.button("sort-projects", "项目排序", () => openOverlay({ mod: MOD, kind: "popup", width: 178, height: 108, props: { menu: "sort" } }), t, "sort"))
+          .child(this.button("agent-settings", "Agent 设置", () => this.showAgentSettings(), t, "settings"))
+          .child(this.button("refresh-projects", this.controller.busy ? "正在刷新" : "刷新工作树", cx => cx.spawn(async () => this.controller.refresh(true)), t, "refresh", this.controller.busy))
+          .child(this.button("add-project", "添加项目", () => this.projectMenu(this.menuBounds), t, "folder", this.adding)
+            .on_mouse_down("left", e => { this.menuBounds = e.bounds; }))))
       .child(h_flex().mx(10).mb(6).h(28).px(8).gap(7).items_center().flex_none().rounded(6).bg(t.background)
         .child(icon("search", 13).text_color(t.dim))
         .child(Input.new(this.input).flex_1().h_full().text_size(11.5).text_color(t.foreground)))
       .when(Boolean(this.message), el => el.child(div().px(14).pb(8).text_size(11).text_color("#E6B56D").child(this.message)))
-      .when(Boolean(undo), el => el.child(h_flex().px(14).pb(8).gap(6).items_center()
-        .child(div().flex_1().text_size(11).text_color(t.dim).child("已从侧栏移除"))
-        .child(this.button("undo-remove", "撤销", () => this.restore(), t))))
-      .child(v_flex().id("project-tree").flex_1().min_h(0).px(8).overflow_y_scrollbar().track_scroll(this.scroll)
+      .child(v_flex().id("project-tree").flex_1().min_h(0).px(8).pb(8).overflow_y_scrollbar().track_scroll(this.scroll)
         .on_mouse_up("left", (_e, cx) => this.endProjectDrag(cx))
         .on_hover((inside, cx) => { if (!inside) this.endProjectDrag(cx); })
-        .children(rows.map(row => this.row(row, t, s.folded, active?.key)))
+        .children(rows.map(row => this.row(row, t, folded, active?.key, s.activeOnly)))
         .when(!this.items.length, el => el.child(v_flex().px(8).py(16).gap(10)
-          .child(div().text_size(12).text_color(t.muted).child(this.controller.busy ? "正在读取项目…" : this.query ? "没有匹配的项目或 Worker" : "固定一个项目，从这里继续工作"))
-          .when(!this.query && !this.controller.busy, el => el.child(this.button("add-first-project", "添加项目", () => this.projectMenu(), t)))))
+          .child(div().text_size(12).text_color(t.muted).child(
+            this.controller.busy ? "正在读取项目…" :
+            this.query ? "没有匹配的项目或 Worker" :
+            s.activeOnly ? "当前没有活动的 Agent" : "固定一个项目，从这里继续工作"
+          ))
+          .when(!this.query && !this.controller.busy && s.activeOnly, el => el.child(this.button("show-all-projects", "查看全部项目", () => this.setActiveOnly(false), t)))
+          .when(!this.query && !this.controller.busy && !s.activeOnly, el => el.child(this.button("add-first-project", "添加项目", () => this.projectMenu(), t)))))
         .when(other.length > 0, el => el.child(div().pt(18).pb(7).px(8).text_size(10.5).text_color(t.dim).child("其他工作空间")))
-        .children(other.map(row => this.row(row, t, s.folded, active?.key))))
-      .child(h_flex().h(27).px(16).flex_none().items_center().text_size(10).text_color(t.dim)
-        .child("↑↓ 导航   ←→ 折叠   空格 操作"));
+        .children(other.map(row => this.row(row, t, folded, active?.key, s.activeOnly))));
   }
 }
